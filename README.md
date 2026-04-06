@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project was completed as part of a capstone assignment following training in R programming. The objective was to apply R skills to a real-world tuberculosis (TB) dataset, focusing on data cleaning, transformation, analysis, and visualization.
+This project was completed as part of a capstone assignment following training in R programming. I wanted to learn and apply R skills to a real-world tuberculosis (TB) dataset, focusing on data cleaning, transformation, analysis, and visualization.
 
 ## Learning Outcome
 
