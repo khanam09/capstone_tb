@@ -50,8 +50,9 @@ A descending order column chart was generated to display the number of patients 
 
 ## Conclusion
 
-This capstone project demonstrates the application of R for analyzing real-world health data. It strengthened foundational data analysis skills and provided practical experience relevant to epidemiological research and public health data workflows.
+This capstone project showed the application of R for analyzing real-world health data. It strengthened my foundational data analysis skills and provided practical experience relevant to epidemiological research and public health data workflows. 
 
-## Author
 
+By-
 Namrata Kharat
+
