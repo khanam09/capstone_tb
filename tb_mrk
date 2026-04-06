@@ -1,0 +1,518 @@
+
+
+
+
+
+---
+
+## Load Libraries
+
+```{r libraries}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(scales)
+library(janitor)
+library(nortest)   # Anderson-Darling normality test
+library(ggpubr)    # ggqqplot
+library(flextable)
+
+OUT  <- "/Users/icmr_namratak1/Desktop/capstone2"
+IMGS <- file.path(OUT, "charts")
+dir.create(IMGS, showWarnings = FALSE)
+
+PAL <- c("#2563EB", "#16A34A", "#DC2626", "#D97706", "#7C3AED", "#0891B2")
+```
+
+---
+
+## Load Raw Data
+
+```{r load-data}
+df_raw <- read_excel(
+  file.path(OUT, "clinical parameters_TBpatients.xlsx"),
+  sheet = 1
+)
+
+cat("Rows:", nrow(df_raw), " | Columns:", ncol(df_raw))
+glimpse(df_raw)
+```
+
+---
+
+# Q1 Bring Date of Assessment First & Rename to `start`
+
+```{r q1}
+
+
+df_raw <- clean_names(df_raw)
+
+df <- df_raw |>
+  relocate(date_of_assessment) |>
+  rename(start = date_of_assessment)
+
+cat("First 4 column names:\n")
+names(df)[1:4]
+```
+
+
+```{r q1-table, echo=FALSE}
+df |>
+  select(start, end) |>
+  head(6) |>
+  rename(Start = start, End = end) |>
+  flextable() |>
+  autofit() |>
+  theme_vanilla()
+```
+
+---
+
+# Q2  Create Unique ID from Row Index
+
+```{r q2}
+
+df <- df |>
+  tibble::rownames_to_column(var = "row_id") |>
+  mutate(id = paste0("PT-", str_pad(row_id, 4, pad = "0"))) |>
+  relocate(id) |>
+  select(-row_id)
+
+cat("Sample IDs:\n")
+head(df$id, 6)
+```
+
+## show screenshot
+
+```{r q2-table, echo=FALSE}
+df |>
+  select(id, start, district, age, gender) |>
+  head(8) |>
+  rename(ID = id, Start = start, District = district,
+         Age = age, Gender = gender) |>
+  flextable() |>
+  autofit() |>
+  theme_vanilla()
+```
+
+---
+
+# Q3 Mean Delay and Mean Age (Replace Missing with Mean)
+
+```{r q3}
+# Delay = end - start in days
+df <- df |>
+  mutate(delay_days = as.numeric(difftime(end, start, units = "days")))
+
+mean_delay <- mean(df$delay_days, na.rm = TRUE)
+mean_age   <- mean(df$age,        na.rm = TRUE)
+
+# Replace missing values with mean
+df <- df |>
+  mutate(
+    delay_days = if_else(is.na(delay_days), round(mean_delay), delay_days),
+    age        = if_else(is.na(age),        mean_age,          age)
+  )
+
+cat(sprintf("Mean delay in assessment : %.2f days\n", mean_delay))
+cat(sprintf("Mean age of patients     : %.2f years\n", mean_age))
+```
+
+```{r q3-table, echo=FALSE}
+tibble(
+  Metric = c("Mean delay in assessment", "Mean age of patients"),
+  Value  = c(paste0(round(mean_delay, 2), " days"),
+             paste0(round(mean_age,   2), " years"))
+) |>
+  flextable() |>
+  autofit() |>
+  theme_vanilla()
+```
+
+---
+
+# Q4 Percentage of Patients with Cough
+
+```{r q4}
+cough_n   <- sum(df$current_symptoms_cough, na.rm = TRUE)
+cough_pct <- round(cough_n / nrow(df) * 100, 2)
+
+cat(sprintf("%d / %d patients had cough  →  %.2f%%\n",
+            cough_n, nrow(df), cough_pct))
+```
+
+
+
+```{r q4-plot, fig.width=5, fig.height=4}
+tibble(
+  Group = c("Cough Present", "No Cough"),
+  n     = c(cough_n, nrow(df) - cough_n)
+) |>
+  ggplot(aes(x = Group, y = n, fill = Group)) +
+  geom_col(width = 0.5, colour = "white") +
+  geom_text(aes(label = paste0(n, "\n(", round(n / nrow(df) * 100, 1), "%)")),
+            vjust = -0.3, fontface = "bold", size = 4.5) +
+  scale_fill_manual(values = c("Cough Present" = PAL[3],
+                               "No Cough"      = PAL[1])) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(title = paste0("Cough Prevalence — ", cough_pct, "% of Patients"),
+       x = NULL, y = "Number of Patients") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+---
+
+# Q5  Stacked Column Chart: Patients by District and Gender
+
+```{r q5, fig.width=7.5, fig.height=5}
+dist_gender <- df |>
+  filter(!is.na(district), !is.na(gender)) |>
+  count(district, gender)
+
+ggplot(dist_gender,
+       aes(x = reorder(district, -n, sum), y = n, fill = gender)) +
+  geom_col(width = 0.6, colour = "white") +
+  geom_text(aes(label = n),
+            position = position_stack(vjust = 0.5),
+            colour = "white", fontface = "bold", size = 4) +
+  scale_fill_manual(values = c("Female" = PAL[5], "Male" = PAL[1])) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
+  labs(title = "Number of TB Patients by District and Gender",
+       x = "District", y = "Number of Patients", fill = "Gender") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "top")
+```
+
+
+---
+
+# Q6 Does Age Follow a Normal Distribution?
+
+```{r q6-tests}
+age_vals <- na.omit(df$age)
+
+# Shapiro-Wilk test
+sw <- shapiro.test(sample(age_vals, min(length(age_vals), 5000)))
+
+# Anderson-Darling test (nortest package)
+ad_res <- ad.test(age_vals)
+
+# Manual skewness
+skew_val <- round(
+  (sum((age_vals - mean(age_vals))^3) / length(age_vals)) / sd(age_vals)^3,
+  3
+)
+
+tibble(
+  Test      = c("Shapiro-Wilk", "Anderson-Darling"),
+  Statistic = c(round(sw$statistic, 4), round(ad_res$statistic, 4)),
+  `p-value` = c(format.pval(sw$p.value,  digits = 4),
+                format.pval(ad_res$p.value, digits = 4)),
+  Decision  = c(
+    ifelse(sw$p.value     < 0.05, "Reject normality", "Cannot reject normality"),
+    ifelse(ad_res$p.value < 0.05, "Reject normality", "Cannot reject normality")
+  )
+) |>
+  flextable() |>
+  autofit() |>
+  theme_vanilla()
+```
+
+```{r q6-plots, fig.width=11, fig.height=5}
+p_hist <- ggplot(df, aes(x = age)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 25, fill = PAL[1], colour = "white", alpha = 0.85) +
+  geom_density(colour = PAL[3], linewidth = 1.1) +
+  stat_function(fun  = dnorm,
+                args = list(mean = mean(age_vals), sd = sd(age_vals)),
+                colour = PAL[4], linewidth = 1.1, linetype = "dashed") +
+  annotate("text", x = max(age_vals) * 0.97, y = Inf,
+           label = paste0("SW p = ", format.pval(sw$p.value, digits = 3)),
+           hjust = 1, vjust = 1.8, size = 3.5,
+           colour = ifelse(sw$p.value < 0.05, PAL[3], PAL[2])) +
+  labs(title    = "Age Distribution",
+       subtitle = "Red = KDE  |  Orange dashed = Normal curve",
+       x = "Age (years)", y = "Density") +
+  theme_classic(base_size = 12)
+
+p_qq <- ggqqplot(df, x = "age", colour = PAL[1], conf.int = TRUE) +
+  labs(title = "Q-Q Plot of Age") +
+  theme_classic(base_size = 12)
+
+ggarrange(p_hist, p_qq, ncol = 2, labels = c("A", "B"))
+```
+
+
+---
+
+# Q7 Risk Stratification by Abnormal Parameter Count
+
+```{r q7}
+df <- df |>
+  mutate(
+    algo_risk = case_when(
+      no_of_abnormal_parameters <= 1 ~ "Low risk (algo)",
+      no_of_abnormal_parameters <= 3 ~ "Moderate risk (algo)",
+      no_of_abnormal_parameters >= 4 ~ "High risk (algo)",
+      TRUE ~ NA_character_
+    ),
+    algo_risk = factor(algo_risk,
+                       levels = c("Low risk (algo)",
+                                  "Moderate risk (algo)",
+                                  "High risk (algo)"))
+  )
+
+risk_summary <- df |>
+  count(algo_risk) |>
+  mutate(Percentage = paste0(round(n / nrow(df) * 100, 1), "%"))
+
+risk_summary |>
+  rename(`Risk Category` = algo_risk, Count = n) |>
+  flextable() |>
+  autofit() |>
+  theme_vanilla()
+```
+
+```{r fig.width=7, fig.height=5}                                              
+  risk_order <- c("Low risk (algo)", "Moderate risk (algo)", "High risk (algo)")
+                                                                                
+  risk_summary |>                                                               
+    ggplot(aes(x = algo_risk, y = n, fill = algo_risk)) +                       
+    geom_col(width = 0.55, colour = "white") +                                  
+    geom_text(aes(label = paste0(n, "\n(", Percentage, ")")),
+              vjust = -0.25, fontface = "bold", size = 4.2) +                   
+    scale_fill_manual(values = setNames(c(PAL[2], PAL[4], PAL[3]),
+                                        risk_order)) +                          
+    scale_x_discrete(labels = c("Low\n(≤1 abnormal)",
+                                 "Moderate\n(2–3 abnormal)",                    
+                                 "High\n(≥4 abnormal)")) +                      
+    scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+    labs(title = "Patient Count by Algorithmic Risk Stratification",            
+         x = "Risk Category", y = "Number of Patients") +                       
+    theme_classic(base_size = 13) +
+    theme(legend.position = "none")                                             
+```
+  
+  
+  
+---
+
+# Q8  Cross-Tabulation: MO Risk vs Algorithmic Risk
+
+```{r q8-clean}
+df <- df |>
+  mutate(
+    mo_risk_clean = case_when(
+      str_detect(tolower(final_risk_stratification_by_the_medical_officer),
+                 "high")     ~ "High risk (MO)",
+      str_detect(tolower(final_risk_stratification_by_the_medical_officer),
+                 "moderate") ~ "Moderate risk (MO)",
+      str_detect(tolower(final_risk_stratification_by_the_medical_officer),
+                 "low")      ~ "Low risk (MO)",
+      TRUE                   ~ "Unknown / Missing"
+    ),
+    mo_risk_clean = factor(mo_risk_clean,
+                           levels = c("Low risk (MO)", "Moderate risk (MO)",
+                                      "High risk (MO)", "Unknown / Missing"))
+  )
+
+undertriage_n <- df |>
+  filter(mo_risk_clean == "Low risk (MO)",
+         algo_risk     == "High risk (algo)") |>
+  nrow()
+
+cat(sprintf(
+  "Patients classified LOW by MO but HIGH algorithmically: %d (%.1f%%)\n",
+  undertriage_n, undertriage_n / nrow(df) * 100
+))
+```
+
+```{r q8-crosstab}
+# Wide cross-tabulation table
+ct_wide <- df |>
+  filter(mo_risk_clean != "Unknown / Missing", !is.na(algo_risk)) |>
+  count(mo_risk_clean, algo_risk) |>
+  pivot_wider(names_from = algo_risk, values_from = n, values_fill = 0) |>
+  rename(`MO Risk` = mo_risk_clean)
+
+ct_wide |>
+  flextable() |>
+  bg(i = ~ `MO Risk` == "Low risk (MO)",
+     j = "High risk (algo)", bg = "#FCA5A5") |>
+  bold(i = ~ `MO Risk` == "Low risk (MO)",
+       j = "High risk (algo)") |>
+  autofit() |>
+  theme_vanilla()
+```
+
+```{r q8-heatmap, fig.width=9, fig.height=6}
+ct_long <- df |>
+  filter(mo_risk_clean != "Unknown / Missing", !is.na(algo_risk)) |>
+  count(mo_risk_clean, algo_risk)
+
+ggplot(ct_long, aes(x = algo_risk, y = mo_risk_clean, fill = n)) +
+  geom_tile(colour = "white", linewidth = 0.8) +
+  geom_text(aes(label = n), fontface = "bold", size = 5.5) +
+  scale_fill_gradient(low = "#FEF9C3", high = "#DC2626", name = "Count") +
+  labs(
+    title    = "Cross-Tabulation: Medical Officer vs Algorithmic Risk",
+    x = "Algorithmic Risk (# abnormal parameters)",
+    y = "Medical Officer Risk Assessment"
+  ) +
+  theme_classic(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+
+---
+
+# Q9 Abnormal Parameters- RR, BMI, Haemoglobin, O₂ Saturation
+
+```{r q9, fig.width=7, fig.height=5}
+param_counts <- tibble(
+  Parameter = c("Respiratory Rate", "BMI", "Haemoglobin", "O2 Saturation"),
+  col_name  = c("respiratory_rate", "bmi", "haemoglobin", "oxygen_saturation")
+) |>
+  mutate(Count = map_int(col_name,
+                         ~ sum(df[[.x]], na.rm = TRUE))) |>
+  select(-col_name) |>
+  arrange(desc(Count))
+
+param_counts |>
+  mutate(Percentage = paste0(round(Count / nrow(df) * 100, 1), "%")) |>
+  flextable() |>
+  autofit() |>
+  theme_vanilla()
+
+param_counts |>
+  mutate(Parameter = fct_reorder(Parameter, Count)) |>
+  ggplot(aes(x = Parameter, y = Count, fill = Parameter)) +
+  geom_col(width = 0.55, colour = "white") +
+  geom_text(aes(label = Count), vjust = -0.4,
+            fontface = "bold", size = 4.8) +
+  scale_fill_manual(values = setNames(PAL[1:4],
+                                      param_counts$Parameter[order(param_counts$Count)])) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(title    = "Patients with Abnormal Clinical Parameters",
+       x = NULL, y = "Number of Patients (Abnormal)") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+---
+
+# Q10 Subset-- Male Patients Without Blood in Sputum
+
+```{r q10}
+df_subset <- df |>
+  filter(gender == "Male", blood_in_sputum == 0)
+
+cat(sprintf("Total patients          : %d\n",  nrow(df)))
+cat(sprintf("Total males             : %d\n",  sum(df$gender == "Male", na.rm = TRUE)))
+cat(sprintf("Males, no blood sputum  : %d (%.1f%%)\n",
+            nrow(df_subset), nrow(df_subset) / nrow(df) * 100))
+
+writexl::write_xlsx(df_subset,                                                
+                      file.path(OUT, "subset_males_no_blood_sputum_.xlsx"))
+```
+
+
+
+```{r q10-table, echo=FALSE}
+df_subset |>
+  select(id, start, district, age, gender,
+         blood_in_sputum, no_of_abnormal_parameters, mo_risk_clean) |>
+  head(8) |>
+  rename(ID = id, Start = start, District = district, Age = age,
+         Gender = gender, `Blood in Sputum` = blood_in_sputum,
+         `Abnormal Params` = no_of_abnormal_parameters,
+         `MO Risk` = mo_risk_clean) |>
+  flextable() |>
+  autofit() |>
+  theme_vanilla()
+```
+
+---
+
+# Q11 — Additional 
+
+```{r fig.width=8, fig.height=5}                                              
+  ggplot(df |> filter(!is.na(gender)),                                          
+         aes(x = age, fill = gender)) +                                         
+    geom_histogram(bins = 22, alpha = 0.75,                                     
+                   colour = "white", position = "identity") +                   
+    scale_fill_manual(values = c("Female" = PAL[5], "Male" = PAL[1])) +
+    labs(title    = "Age Distribution by Gender",                               
+         subtitle = paste0("Mean age = ", round(mean(df$age, na.rm = TRUE), 1), 
+  " yrs"),
+         x = "Age (years)", y = "Count", fill = "Gender") +                     
+    theme_classic(base_size = 12) +                                             
+    theme(legend.position = "top")
+```                    
+  
+  
+##  Symptom burden
+
+```{r fig.width=9, fig.height=5}
+symp_df <- tibble(
+  Symptom  = c("Cough", "Persistent Fever", "Evening Rise of Temp",
+               "Breathlessness", "Loss of Appetite", "Loss of Weight",
+               "Blood in Sputum"),
+  col_name = c("current_symptoms_cough",
+               "current_symptoms_persistent_fever",
+               "current_symptoms_evening_rise_of_temperature",
+               "current_symptoms_breathlessness",
+               "current_symptoms_loss_of_appetite",
+               "current_symptoms_loss_of_weight",
+               "blood_in_sputum")
+) |>
+  mutate(Count = map_int(col_name, ~ sum(df[[.x]], na.rm = TRUE)),
+         Pct   = round(Count / nrow(df) * 100, 1)) |>
+  arrange(Count)
+
+symp_df |>
+  mutate(Symptom = fct_reorder(Symptom, Count)) |>
+  ggplot(aes(x = Count, y = Symptom)) +
+  geom_col(fill = PAL[1], width = 0.65, colour = "white") +
+  geom_text(aes(label = paste0(Count, " (", Pct, "%)")),
+            hjust = -0.08, size = 3.5, fontface = "bold") +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.22))) +
+  labs(title = "Symptom Prevalence in TB Patients",
+       x = "Number of Patients", y = NULL) +
+  theme_classic(base_size = 12)
+```
+#The Under-Triage by District
+
+```{r fig.width=8, fig.height=5}
+undertriage_by_dist <- df |>
+  filter(mo_risk_clean != "Unknown / Missing") |>
+  group_by(district) |>
+  summarise(
+    Total         = n(),
+    Under_triaged = sum(mo_risk_clean == "Low risk (MO)" &
+                          algo_risk   == "High risk (algo)", na.rm = TRUE),
+    Pct           = round(Under_triaged / Total * 100, 1)
+  ) |>
+  filter(!is.na(district))
+
+undertriage_by_dist |>
+  rename(District = district, `Under-triaged` = Under_triaged,
+         `% of District` = Pct) |>
+  flextable() |>
+  autofit() |>
+  theme_vanilla()
+
+undertriage_by_dist |>
+  ggplot(aes(x = reorder(district, -Under_triaged),
+             y = Under_triaged, fill = district)) +
+  geom_col(width = 0.55, colour = "white") +
+  geom_text(aes(label = paste0(Under_triaged, "\n(", Pct, "%)")),
+            vjust = -0.25, fontface = "bold", size = 4) +
+  scale_fill_manual(values = PAL[c(3, 4, 1, 2)]) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.22))) +
+  labs(title    = "Under-Triage by District",
+       x = "District", y = "Under-triaged Patients") +
+  theme_classic(base_size = 13) +
+  theme(legend.position = "none")
+```
