@@ -386,7 +386,7 @@ param_counts |>
   theme_vanilla()
 
 param_counts |>
-  mutate(Parameter = fct_reorder(Parameter, Count)) |>
+ mutate(Parameter = fct_reorder(Parameter, Count, .desc = TRUE)) |>
   ggplot(aes(x = Parameter, y = Count, fill = Parameter)) +
   geom_col(width = 0.55, colour = "white") +
   geom_text(aes(label = Count), vjust = -0.4,
